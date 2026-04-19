@@ -727,10 +727,17 @@ describe('state-server directory initialization', () => {
 
       const completed = JSON.parse(
         await readFile(join(wd, '.omx', 'state', 'sessions', 'sess-handoff', 'deep-interview-state.json'), 'utf-8'),
-      ) as { active?: boolean; current_phase?: string; completed_at?: string; auto_completed_reason?: string };
+      ) as {
+        active?: boolean;
+        current_phase?: string;
+        completed_at?: string;
+        auto_completed_reason?: string;
+        run_outcome?: string;
+      };
       assert.equal(completed.active, false);
       assert.equal(completed.current_phase, 'completed');
       assert.equal(typeof completed.completed_at, 'string');
+      assert.equal(completed.run_outcome, 'finish');
       assert.match(completed.auto_completed_reason || '', /mode transiting: deep-interview -> ralplan/);
     } finally {
       await rm(wd, { recursive: true, force: true });

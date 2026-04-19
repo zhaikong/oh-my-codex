@@ -515,6 +515,42 @@ describe('notify-hook Ralph session resume', () => {
     }
   });
 
+  it('does not treat blocked_on_user Ralph state as resumable', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-notify-ralph-blocked-on-user-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const currentOmxSessionId = 'sess-current';
+      const priorOmxSessionId = 'sess-prior';
+      const currentSessionDir = join(stateDir, 'sessions', currentOmxSessionId);
+      const priorSessionDir = join(stateDir, 'sessions', priorOmxSessionId);
+      await writeJson(join(stateDir, 'session.json'), { session_id: currentOmxSessionId });
+      await mkdir(currentSessionDir, { recursive: true });
+      await writeJson(join(priorSessionDir, 'ralph-state.json'), {
+        active: false,
+        iteration: 4,
+        max_iterations: 10,
+        current_phase: 'blocked_on_user',
+        completed_at: '2026-02-22T00:00:00.000Z',
+        owner_omx_session_id: priorOmxSessionId,
+        owner_codex_session_id: 'codex-session-1',
+      });
+
+      const result = runNotifyHook(buildPayload(wd, {
+        session_id: 'codex-session-1',
+        thread_id: 'thread-blocked-on-user',
+        turn_id: 'turn-blocked-on-user',
+      }));
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+
+      assert.equal(existsSync(join(currentSessionDir, 'ralph-state.json')), false);
+      const priorState = JSON.parse(await readFile(join(priorSessionDir, 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(priorState.active, false);
+      assert.equal(priorState.current_phase, 'blocked_on_user');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('does not auto-resume over an inactive current-session Ralph file', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-notify-ralph-inactive-current-'));
     try {

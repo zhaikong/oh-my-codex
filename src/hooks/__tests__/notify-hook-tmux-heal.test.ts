@@ -27,6 +27,38 @@ async function readJson<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, 'utf-8')) as T;
 }
 
+function withPatchedEnv<T>(patch: Record<string, string>, run: () => Promise<T>): Promise<T> {
+  const managedKeys = new Set([
+    ...Object.keys(patch),
+    'CODEX_HOME',
+    'OMX_SESSION_ID',
+    'OMX_RUNTIME_BRIDGE',
+    'OMX_NOTIFY_FALLBACK',
+    'OMX_NOTIFY_FALLBACK_AUTO_NUDGE_STALL_MS',
+    'OMX_HOOK_CONFIG',
+    'OMX_NOTIFY_PROFILE',
+    'OMX_NOTIFY_VERBOSITY',
+    'OMX_TEAM_WORKER',
+    'OMX_TEAM_STATE_ROOT',
+    'OMX_TEAM_LEADER_CWD',
+    'OMX_MODEL_INSTRUCTIONS_FILE',
+    'TMUX',
+    'TMUX_PANE',
+  ]);
+  const previous = new Map<string, string | undefined>();
+  for (const key of managedKeys) {
+    previous.set(key, process.env[key]);
+    if (Object.prototype.hasOwnProperty.call(patch, key)) process.env[key] = patch[key]!;
+    else delete process.env[key];
+  }
+  return run().finally(() => {
+    for (const [key, value] of previous) {
+      if (typeof value === 'string') process.env[key] = value;
+      else delete process.env[key];
+    }
+  });
+}
+
 
 function readLinuxStartTicks(pid: number): number | null {
   try {
@@ -1026,6 +1058,110 @@ exit 1
     });
   });
 
+  it('does not heal the repo-scoped target when a preGuard skip returns early', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const sessionId = 'omx-preguard-heal';
+      const sessionStateDir = join(stateDir, 'sessions', sessionId);
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const managedSessionName = buildTmuxSessionName(cwd, sessionId);
+      const configPath = join(omxDir, 'tmux-hook.json');
+      const hookStatePath = join(stateDir, 'tmux-hook-state.json');
+
+      await mkdir(sessionStateDir, { recursive: true });
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeManagedSessionState(stateDir, cwd, sessionId);
+      await writeJson(join(sessionStateDir, 'ralph-state.json'), {
+        active: true,
+        iteration: 0,
+        tmux_pane_id: '%99',
+      });
+      await writeJson(configPath, {
+        enabled: true,
+        target: { type: 'session', value: 'nonexistent-session' },
+        allowed_modes: ['ralph'],
+        cooldown_ms: 0,
+        max_injections_per_session: 10,
+        prompt_template: 'Continue [OMX_TMUX_INJECT]',
+        marker: '[OMX_TMUX_INJECT]',
+        dry_run: false,
+        log_level: 'debug',
+      });
+
+      const fakeTmux = `#!/usr/bin/env bash
+set -eu
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  format=""
+  while (($#)); do
+    case "$1" in
+      -p) shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) format="$1"; shift ;;
+    esac
+  done
+  if [[ "$format" == "#{pane_id}" && "$target" == "%99" ]]; then
+    echo "%99"
+    exit 0
+  fi
+  if [[ "$format" == "#{pane_current_path}" && "$target" == "%99" ]]; then
+    echo "${cwd}"
+    exit 0
+  fi
+  if [[ "$format" == "#S" && "$target" == "%99" ]]; then
+    echo "${managedSessionName}"
+    exit 0
+  fi
+  echo "bad display target: $target / $format" >&2
+  exit 1
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  echo "can't find session" >&2
+  exit 1
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  echo "unexpected send-keys" >&2
+  exit 1
+fi
+echo "unsupported cmd: $cmd" >&2
+exit 1
+`;
+      await writeFile(fakeTmuxPath, fakeTmux);
+      await chmod(fakeTmuxPath, 0o755);
+
+      const payload = {
+        cwd,
+        type: 'agent-turn-complete',
+        session_id: sessionId,
+        'thread-id': 'thread-test-preguard-heal',
+        'turn-id': 'turn-test-preguard-heal',
+        'input-messages': ['already contains [OMX_TMUX_INJECT] marker'],
+        'last-assistant-message': 'output',
+      };
+
+      await withPatchedEnv({
+        PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+        OMX_TEAM_WORKER: '',
+      }, async () => {
+        await handleTmuxInjection({ payload, cwd, stateDir, logsDir });
+      });
+
+      const hookState = await readJson<Record<string, unknown>>(hookStatePath);
+      assert.equal(hookState.last_reason, 'loop_guard_input_marker');
+      assert.equal(hookState.total_injections, 0);
+
+      const healedConfig = await readJson<{ target: { type: string; value: string } }>(configPath);
+      assert.equal(healedConfig.target.type, 'session');
+      assert.equal(healedConfig.target.value, 'nonexistent-session');
+    });
+  });
   it('prefers scoped active mode state over global mode state for tmux pane selection', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');

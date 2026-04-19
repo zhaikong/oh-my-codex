@@ -40,6 +40,29 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(resized[0]?.heightLines, 3);
   });
 
+  it('prefers an explicit session override when recreating HUD', async () => {
+    const created: Array<{ cmd: string }> = [];
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-stale' },
+      sessionId: 'sess-canonical',
+      listCurrentWindowPanes: () => [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
+      ],
+      createHudWatchPane: (_cwd, cmd) => {
+        created.push({ cmd });
+        return '%9';
+      },
+      resizeTmuxPane: () => true,
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(result.status, 'recreated');
+    assert.equal(created.length, 1);
+    assert.match(created[0]?.cmd || '', /^OMX_SESSION_ID='sess-canonical' node '.*omx\.js' hud --watch/);
+    assert.doesNotMatch(created[0]?.cmd || '', /sess-stale/);
+  });
+
   it('kills duplicate HUD panes and recreates one full-width pane', async () => {
     const killed: string[] = [];
 

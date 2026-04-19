@@ -11,8 +11,13 @@ function rx(pattern: string): RegExp {
 const ROOT_TEMPLATE_PATTERNS = [
   rx('quality-first.*intent-deepening responses'),
   rx('clear, low-risk, reversible next steps'),
+  rx('AUTO-CONTINUE.*clear.*already-requested.*low-risk.*reversible.*local'),
+  rx('ASK only.*destructive.*irreversible.*credential-gated.*external-production.*materially scope-changing'),
+  rx('AUTO-CONTINUE branches.*permission-handoff phrasing'),
   rx('do not ask or instruct humans.*ordinary non-destructive.*reversible actions'),
   rx('OMX runtime manipulation.*agent responsibilities'),
+  rx('Keep going unless blocked'),
+  rx('Ask only when blocked|Ask only when progress is impossible'),
   rx('local overrides?.*non-conflicting instructions'),
   rx('reflexive web/tool escalation'),
   rx('Choose the lane before acting'),
@@ -21,6 +26,14 @@ const ROOT_TEMPLATE_PATTERNS = [
   rx('Reserve `worker` strictly for active `team`/`swarm` sessions'),
   rx('Leader responsibilities'),
   rx('Worker responsibilities'),
+  rx('Route to `explore` for repo-local file / symbol / pattern / relationship lookup'),
+  rx('explore` owns facts about this repo'),
+  rx('Route to `researcher` when the main need is official docs'),
+  rx('technology is already chosen'),
+  rx('Route to `dependency-expert` when the main need is package / SDK selection'),
+  rx('whether / which package, SDK, or framework to adopt, upgrade, replace, or migrate'),
+  rx('Use mixed routing deliberately'),
+  rx('boundary crossings upward'),
   rx('Stop / escalate'),
   rx('Default update/final shape'),
   rx('do not skip prerequisites|task is grounded and verified'),
@@ -33,18 +46,33 @@ const CORE_ROLE_PATTERNS = {
     rx('reflexive web/tool escalation'),
     rx('local overrides?.*non-conflicting constraints'),
     rx('task is grounded and verified'),
+    rx('AUTO-CONTINUE.*clear.*already-requested.*low-risk.*reversible.*local'),
+    rx('ASK only.*destructive.*irreversible.*credential-gated.*external-production.*materially scope-changing'),
+    rx('AUTO-CONTINUE branches.*permission-handoff phrasing'),
+    rx('Keep going unless blocked'),
+    rx('Ask only when progress is impossible|Ask only when blocked'),
   ],
   planner: [
     rx('quality-first.*intent-deepening plan summaries'),
     rx('reflexive web/tool escalation'),
     rx('local overrides?.*non-conflicting constraints'),
     rx('plan is grounded in evidence'),
+    rx('AUTO-CONTINUE.*clear.*already-requested.*low-risk.*reversible.*local'),
+    rx('ASK only.*destructive.*irreversible.*credential-gated.*external-production.*materially scope-changing'),
+    rx('AUTO-CONTINUE branches.*permission-handoff phrasing'),
+    rx('Keep advancing the current planning branch unless blocked'),
+    rx('Ask only when a real planning blocker|Ask only when blocked'),
   ],
   verifier: [
     rx('quality-first, evidence-dense summaries'),
     rx('proof that matters|tool churn'),
     rx('verdict is grounded'),
     rx('non-conflicting acceptance criteria'),
+    rx('AUTO-CONTINUE.*clear.*already-requested.*low-risk.*reversible.*local'),
+    rx('ASK only.*destructive.*irreversible.*credential-gated.*external-production.*materially scope-changing'),
+    rx('AUTO-CONTINUE branches.*permission-handoff phrasing'),
+    rx('Keep gathering evidence until the verdict is grounded or blocked'),
+    rx('Ask only when the acceptance target is materially unclear|Ask only when blocked'),
   ],
 };
 
@@ -67,7 +95,6 @@ const SKILL_PATTERNS = [
 ];
 
 export const ROOT_TEMPLATE_CONTRACTS: GuidanceSurfaceContract[] = [
-  { id: 'agents-root', path: 'AGENTS.md', requiredPatterns: ROOT_TEMPLATE_PATTERNS },
   { id: 'agents-template', path: 'templates/AGENTS.md', requiredPatterns: ROOT_TEMPLATE_PATTERNS },
 ];
 

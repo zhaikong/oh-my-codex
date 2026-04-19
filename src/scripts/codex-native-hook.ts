@@ -44,6 +44,18 @@ import type { HookEventEnvelope } from "../hooks/extensibility/types.js";
 import { dispatchHookEvent } from "../hooks/extensibility/dispatcher.js";
 import { reconcileHudForPromptSubmit } from "../hud/reconcile.js";
 import { onSessionStart as buildWikiSessionStartContext } from "../wiki/lifecycle.js";
+import { readAutoresearchCompletionStatus, readAutoresearchModeState } from "../autoresearch/skill-validation.js";
+import { shouldContinueRun } from "../runtime/run-loop.js";
+import { triagePrompt } from "../hooks/triage-heuristic.js";
+import { readTriageConfig } from "../hooks/triage-config.js";
+import {
+  readTriageState,
+  writeTriageState,
+  shouldSuppressFollowup,
+  promptSignature,
+  type TriageStateFile,
+} from "../hooks/triage-state.js";
+import { isPendingDeepInterviewQuestionEnforcement } from "../question/deep-interview.js";
 
 type CodexHookEventName =
   | "SessionStart"
@@ -57,6 +69,7 @@ type CodexHookPayload = Record<string, unknown>;
 interface NativeHookDispatchOptions {
   cwd?: string;
   sessionOwnerPid?: number;
+  reconcileHudForPromptSubmitFn?: typeof reconcileHudForPromptSubmit;
 }
 
 export interface NativeHookDispatchResult {
@@ -66,7 +79,6 @@ export interface NativeHookDispatchResult {
   outputJson: Record<string, unknown> | null;
 }
 
-const TERMINAL_RALPH_PHASES = new Set(["complete", "failed", "cancelled"]);
 const TERMINAL_MODE_PHASES = new Set(["complete", "failed", "cancelled"]);
 const SKILL_STOP_BLOCKERS = new Set(["ralplan"]);
 const TEAM_TERMINAL_TASK_STATUSES = new Set(["completed", "failed"]);
@@ -79,6 +91,18 @@ const STABLE_FINAL_RECOMMENDATION_PATTERNS = [
 ] as const;
 const RELEASE_READINESS_FINALIZE_SYSTEM_MESSAGE =
   "OMX release-readiness detected a stable final recommendation with no active worker tasks; emit one concise final decision summary and finalize.";
+const EXECUTION_HANDOFF_PATTERNS = [
+  /^(?:好|好的|行|可以|那就|那现在)?[，,\s]*(?:开始|继续|直接)\s*(?:执行|优化|实现|修改|修复)(?=$|\s|[，,。.!！?？])/u,
+  /(?:按照|按|基于)(?:这个|上述|当前)?\s*(?:plan|计划|方案).{0,16}(?:开始|继续|直接)?\s*(?:执行|优化|实现|修改|修复)/u,
+  /(?:不用|别|不要).{0,6}讨论/u,
+  /\b(?:start|begin|go ahead(?: and)?|proceed(?: now)?)\s+(?:to\s+)?(?:implement|execute|apply|fix)\b/i,
+  /\b(?:according to|based on)\s+(?:the|this|that)\s+plan\b.{0,20}\b(?:start|begin|proceed(?: now)?|go ahead(?: and)?)\b/i,
+] as const;
+const SHORT_FOLLOWUP_PRIORITY_PATTERNS = [
+  /^(?:继续|接着|然后|那就|那现在|还有(?:一个)?问题|这些优化都做了么|这些都做了么|现在呢|本轮|当前轮|这一轮)/u,
+  /(?:按照|按|基于)(?:这个|上述|当前)?(?:plan|计划|方案)/u,
+  /\b(?:follow up|latest request|this turn|current turn|newest request)\b/i,
+] as const;
 
 function safeString(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -93,6 +117,34 @@ function safePositiveInteger(value: unknown): number | null {
   if (typeof value === "string" && value.trim() !== "") {
     const parsed = Number.parseInt(value.trim(), 10);
     if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+function normalizePromptSignalText(text: string): string {
+  return text.trim().replace(/\s+/g, " ");
+}
+
+function looksLikeExecutionHandoffPrompt(prompt: string): boolean {
+  const normalized = normalizePromptSignalText(prompt);
+  if (!normalized) return false;
+  return EXECUTION_HANDOFF_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function looksLikeShortFollowupPrompt(prompt: string): boolean {
+  const normalized = normalizePromptSignalText(prompt);
+  if (!normalized) return false;
+  if (looksLikeExecutionHandoffPrompt(normalized)) return true;
+  if (normalized.length > 240) return false;
+  return SHORT_FOLLOWUP_PRIORITY_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function buildPromptPriorityMessage(prompt: string): string | null {
+  if (looksLikeExecutionHandoffPrompt(prompt)) {
+    return "Newest user input is an execution handoff for the current task. Treat it as authorization to act now against the latest approved plan/request. Do not restate the prior plan unless the user explicitly asks for a recap or status update.";
+  }
+  if (looksLikeShortFollowupPrompt(prompt)) {
+    return "Newest user input is a same-thread follow-up. Answer that latest follow-up directly and prefer it over older unresolved prompts when choosing what to do next.";
   }
   return null;
 }
@@ -196,6 +248,18 @@ function formatPhase(value: unknown, fallback = "active"): string {
   return phase || fallback;
 }
 
+async function readActiveAutoresearchState(
+  cwd: string,
+  sessionId?: string,
+): Promise<Record<string, unknown> | null> {
+  const normalizedSessionId = sessionId?.trim() || undefined;
+  if (!normalizedSessionId) return null;
+  const state = await readAutoresearchModeState(cwd, normalizedSessionId);
+  if (state?.active !== true) return null;
+  if (!isNonTerminalPhase(state.current_phase ?? state.currentPhase ?? 'executing')) return null;
+  return state;
+}
+
 async function readActiveRalphState(
   stateDir: string,
   preferredSessionId?: string,
@@ -211,12 +275,7 @@ async function readActiveRalphState(
     const sessionScoped = await readJsonIfExists(
       join(stateDir, "sessions", sessionId, "ralph-state.json"),
     );
-    if (
-      sessionScoped?.active === true
-      && !TERMINAL_RALPH_PHASES.has(
-        safeString(sessionScoped.current_phase).trim().toLowerCase(),
-      )
-    ) {
+    if (sessionScoped?.active === true && shouldContinueRun(sessionScoped)) {
       return sessionScoped;
     }
   }
@@ -224,7 +283,7 @@ async function readActiveRalphState(
   if (sessionCandidates.length > 0) return null;
 
   const direct = await readJsonIfExists(join(stateDir, "ralph-state.json"));
-  if (direct?.active === true && !TERMINAL_RALPH_PHASES.has(safeString(direct.current_phase).trim().toLowerCase())) {
+  if (direct?.active === true && shouldContinueRun(direct)) {
     return direct;
   }
 
@@ -234,12 +293,7 @@ async function readActiveRalphState(
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const candidate = await readJsonIfExists(join(sessionsRoot, entry.name, "ralph-state.json"));
-    if (
-      candidate?.active === true
-      && !TERMINAL_RALPH_PHASES.has(
-        safeString(candidate.current_phase).trim().toLowerCase(),
-      )
-    ) {
+    if (candidate?.active === true && shouldContinueRun(candidate)) {
       return candidate;
     }
   }
@@ -471,9 +525,10 @@ async function buildSessionStartContext(
 
 function buildAdditionalContextMessage(prompt: string, skillState?: SkillActiveState | null): string | null {
   if (!prompt) return null;
+  const promptPriorityMessage = buildPromptPriorityMessage(prompt);
   const matches = detectKeywords(prompt);
   const match = detectPrimaryKeyword(prompt);
-  if (!match) return null;
+  if (!match) return promptPriorityMessage;
   const detectedKeywordMessage = matches.length > 1
     ? `OMX native UserPromptSubmit detected workflow keywords ${matches.map((entry) => `"${entry.keyword}" -> ${entry.skill}`).join(", ")}.`
     : `OMX native UserPromptSubmit detected workflow keyword "${match.keyword}" -> ${match.skill}.`;
@@ -487,6 +542,9 @@ function buildAdditionalContextMessage(prompt: string, skillState?: SkillActiveS
   const ralphPromptActivationNote = skillState?.initialized_mode === "ralph"
     ? "Prompt-side `$ralph` activation seeds Ralph workflow state only; it does not invoke `omx ralph`. Use `omx ralph --prd ...` only when you explicitly want the PRD-gated CLI startup path."
     : null;
+  const deepInterviewPromptActivationNote = skillState?.initialized_mode === "deep-interview"
+    ? "Deep-interview must ask each interview round via `omx question`; do not fall back to `request_user_input` or plain-text questioning. Stop remains blocked while a deep-interview question obligation is pending."
+    : null;
   const combinedTransitionMessage = (() => {
     if (!skillState?.transition_message) return null;
     if (matches.length <= 1 || activeSkills.length <= 1) return skillState.transition_message;
@@ -499,6 +557,7 @@ function buildAdditionalContextMessage(prompt: string, skillState?: SkillActiveS
     return [
       `OMX native UserPromptSubmit denied workflow keyword "${match.keyword}" -> ${match.skill}.`,
       skillState.transition_error,
+      promptPriorityMessage,
       'Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.',
     ].join(' ');
   }
@@ -511,6 +570,7 @@ function buildAdditionalContextMessage(prompt: string, skillState?: SkillActiveS
       deferredSkills.length > 0
         ? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
         : null,
+      promptPriorityMessage,
       skillState.initialized_mode && skillState.initialized_state_path
         ? `skill: ${skillState.initialized_mode} activated and initial state initialized at ${skillState.initialized_state_path}; write subsequent updates via omx_state MCP.`
         : null,
@@ -532,7 +592,9 @@ function buildAdditionalContextMessage(prompt: string, skillState?: SkillActiveS
       deferredSkills.length > 0
         ? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
         : null,
+      promptPriorityMessage,
       initializedStateMessage,
+      deepInterviewPromptActivationNote,
       "Use the durable OMX team runtime via `omx team ...` for coordinated execution; do not replace it with in-process fanout.",
       "If you need runtime syntax, run `omx team --help` yourself.",
       "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
@@ -546,13 +608,15 @@ function buildAdditionalContextMessage(prompt: string, skillState?: SkillActiveS
       deferredSkills.length > 0
         ? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
         : null,
+      promptPriorityMessage,
       `skill: ${skillState.initialized_mode} activated and initial state initialized at ${skillState.initialized_state_path}; write subsequent updates via omx_state MCP.`,
+      deepInterviewPromptActivationNote,
       ralphPromptActivationNote,
       "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
     ].join(" ");
   }
 
-  return `${detectedKeywordMessage} Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.`;
+  return [detectedKeywordMessage, promptPriorityMessage, "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules."].filter(Boolean).join(" ");
 }
 
 function parseTeamWorkerEnv(rawValue: string): { teamName: string; workerName: string } | null {
@@ -678,7 +742,7 @@ async function buildModeBasedStopOutput(
   const state = sessionId
     ? await readModeStateForSession(mode, sessionId, cwd)
     : await readModeState(mode, cwd);
-  if (state?.active !== true || !isNonTerminalPhase(state.current_phase)) return null;
+  if (!state || !shouldContinueRun(state)) return null;
   const phase = formatPhase(state.current_phase);
   return {
     decision: "block",
@@ -925,6 +989,51 @@ async function readStopAutoNudgePhase(
 
   const modePhase = safeString(modeState.current_phase).trim().toLowerCase();
   return modePhase === "intent-first" ? "planning" : "";
+}
+
+async function buildDeepInterviewQuestionStopOutput(
+  cwd: string,
+  sessionId: string,
+  threadId: string,
+): Promise<{ output: Record<string, unknown>; obligationId: string } | null> {
+  const modeState = await readStopSessionPinnedState("deep-interview-state.json", cwd, sessionId);
+  if (!modeState || modeState.active !== true) return null;
+
+  const phase = formatPhase(modeState.current_phase, "planning");
+  if (TERMINAL_MODE_PHASES.has(phase.toLowerCase()) || phase === "completing") {
+    return null;
+  }
+
+  const canonicalState = await readVisibleSkillActiveState(cwd, sessionId);
+  if (canonicalState) {
+    const blocker = listActiveSkills(canonicalState).find((entry) => (
+      entry.skill === "deep-interview"
+      && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
+    ));
+    if (!blocker) return null;
+  }
+
+  const questionEnforcement = safeObject(modeState.question_enforcement);
+  if (!isPendingDeepInterviewQuestionEnforcement(questionEnforcement)) {
+    return null;
+  }
+
+  const obligationId = safeString(questionEnforcement.obligation_id).trim();
+  if (!obligationId) return null;
+
+  const systemMessage =
+    `OMX deep-interview is still active (phase: ${phase}) and requires a structured question via omx question before stopping.`;
+
+  return {
+    obligationId,
+    output: {
+      decision: "block",
+      reason:
+        `Deep interview is still active (phase: ${phase}) and has a pending structured question obligation; use \`omx question\` before stopping.`,
+      stopReason: "deep_interview_question_required",
+      systemMessage,
+    },
+  };
 }
 
 function resolveRepeatableStopSessionId(
@@ -1283,6 +1392,28 @@ async function buildStopHookOutput(
   const threadId = readPayloadThreadId(payload);
   const ralphState = await readActiveRalphState(stateDir, canonicalSessionId);
   if (!ralphState) {
+    const autoresearchState = await readActiveAutoresearchState(cwd, canonicalSessionId);
+    if (autoresearchState) {
+      const completion = await readAutoresearchCompletionStatus(cwd, canonicalSessionId!.trim());
+      if (!completion.complete) {
+        const currentPhase = safeString(autoresearchState.current_phase ?? autoresearchState.currentPhase).trim() || 'executing';
+        const systemMessage = `OMX autoresearch is still active (phase: ${currentPhase}); continue until validator evidence is complete before stopping.`;
+        return await maybeReturnRepeatableStopOutput(
+          payload,
+          stateDir,
+          buildRepeatableStopSignature(payload, 'autoresearch-stop', `${currentPhase}|${completion.reason}`, canonicalSessionId),
+          {
+            decision: 'block',
+            reason: systemMessage,
+            stopReason: `autoresearch_${currentPhase}`,
+            systemMessage,
+          },
+          canonicalSessionId,
+          { allowRepeatDuringStopHook: true },
+        );
+      }
+    }
+
     const teamWorkerOutput = await buildTeamWorkerStopOutput(cwd);
     if (hasTeamWorkerContext() && teamWorkerOutput) return teamWorkerOutput;
 
@@ -1343,6 +1474,22 @@ async function buildStopHookOutput(
     }
 
     if (canonicalSessionId) {
+      const deepInterviewQuestionOutput = await buildDeepInterviewQuestionStopOutput(
+        cwd,
+        canonicalSessionId,
+        threadId,
+      );
+      if (deepInterviewQuestionOutput) {
+        return await returnPersistentStopBlock(
+          payload,
+          stateDir,
+          "deep-interview-question-stop",
+          deepInterviewQuestionOutput.obligationId,
+          deepInterviewQuestionOutput.output,
+          canonicalSessionId,
+        );
+      }
+
       const canonicalTeam = await findCanonicalActiveTeamForSession(cwd, canonicalSessionId);
       if (canonicalTeam) {
         const canonicalTeamOutput = buildTeamStopOutputForPhase(
@@ -1435,6 +1582,7 @@ export async function dispatchCodexNativeHook(
 
   const omxEventName = mapCodexHookEventToOmxEvent(hookEventName);
   let skillState: SkillActiveState | null = null;
+  let triageAdditionalContext: string | null = null;
 
   const nativeSessionId = safeString(payload.session_id ?? payload.sessionId).trim();
   const threadId = safeString(payload.thread_id ?? payload.threadId).trim();
@@ -1464,7 +1612,75 @@ export async function dispatchCodexNativeHook(
         turnId,
       });
     }
-    await reconcileHudForPromptSubmit(cwd).catch(() => {});
+    // --- Triage classifier (advisory-only, non-keyword prompts) ---
+    if (prompt && skillState === null) {
+      try {
+        if (readTriageConfig().enabled) {
+          const normalized = prompt.trim().toLowerCase();
+          const previous = readTriageState({ cwd, sessionId: sessionIdForState || null });
+          const suppress = shouldSuppressFollowup({
+            previous,
+            currentPrompt: normalized,
+            currentHasKeyword: false,
+          });
+          if (!suppress) {
+            const decision = triagePrompt(prompt);
+            const nowIso = new Date().toISOString();
+            const effectiveTurnId = turnId || nowIso;
+            if (decision.lane === "HEAVY") {
+              triageAdditionalContext =
+                "OMX native UserPromptSubmit triage detected a multi-step goal with no workflow keyword. This is advisory prompt-routing context only; it did not activate autopilot or initialize workflow state. Prefer the existing autopilot-style workflow if AGENTS.md/runtime conditions allow it, unless newer user context narrows or opts out.";
+              const newState: TriageStateFile = {
+                version: 1,
+                last_triage: {
+                  lane: "HEAVY",
+                  destination: "autopilot",
+                  reason: decision.reason,
+                  prompt_signature: promptSignature(normalized),
+                  turn_id: effectiveTurnId,
+                  created_at: nowIso,
+                },
+                suppress_followup: true,
+              };
+              writeTriageState({ cwd, sessionId: sessionIdForState || null, state: newState });
+            } else if (decision.lane === "LIGHT") {
+              if (decision.destination === "explore") {
+                triageAdditionalContext =
+                  "OMX native UserPromptSubmit triage detected a read-only/question-shaped request with no workflow keyword. This is advisory prompt-routing context only. Prefer the explore role surface rather than escalating to autopilot.";
+              } else if (decision.destination === "executor") {
+                triageAdditionalContext =
+                  "OMX native UserPromptSubmit triage detected a narrow edit-shaped request with no workflow keyword. This is advisory prompt-routing context only. Prefer the executor role surface rather than autopilot.";
+              } else if (decision.destination === "designer") {
+                triageAdditionalContext =
+                  "OMX native UserPromptSubmit triage detected a visual/style request with no workflow keyword. This is advisory prompt-routing context only. Prefer the designer role surface.";
+              }
+              if (triageAdditionalContext !== null) {
+                const dest = decision.destination as "explore" | "executor" | "designer";
+                const newState: TriageStateFile = {
+                  version: 1,
+                  last_triage: {
+                    lane: "LIGHT",
+                    destination: dest,
+                    reason: decision.reason,
+                    prompt_signature: promptSignature(normalized),
+                    turn_id: effectiveTurnId,
+                    created_at: nowIso,
+                  },
+                  suppress_followup: true,
+                };
+                writeTriageState({ cwd, sessionId: sessionIdForState || null, state: newState });
+              }
+            }
+            // lane === "PASS": no context, no state write
+          }
+        }
+      } catch {
+        // Swallow all triage errors; never break the hook
+        triageAdditionalContext = null;
+      }
+    }
+    const reconcileHudForPromptSubmitFn = options.reconcileHudForPromptSubmitFn ?? reconcileHudForPromptSubmit;
+    await reconcileHudForPromptSubmitFn(cwd, { sessionId: canonicalSessionId || sessionIdForState || undefined }).catch(() => {});
   }
 
   if (omxEventName) {
@@ -1493,7 +1709,7 @@ export async function dispatchCodexNativeHook(
   if (hookEventName === "SessionStart" || hookEventName === "UserPromptSubmit") {
     const additionalContext = hookEventName === "SessionStart"
       ? await buildSessionStartContext(cwd, canonicalSessionId || nativeSessionId)
-      : buildAdditionalContextMessage(readPromptText(payload), skillState);
+      : (buildAdditionalContextMessage(readPromptText(payload), skillState) ?? triageAdditionalContext);
     if (additionalContext) {
       outputJson = {
         hookSpecificOutput: {

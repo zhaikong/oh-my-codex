@@ -23,19 +23,21 @@ const ALLOWED_OVERLAP_PAIRS = new Set([
 
 const AUTO_COMPLETE_TRANSITIONS = new Set([
   'deep-interview->ralplan',
+  'deep-interview->autoresearch',
   'ralplan->team',
   'ralplan->ralph',
   'ralplan->autopilot',
+  'ralplan->autoresearch',
 ]);
 
 const PLANNING_LIKE_MODES = new Set<TrackedWorkflowMode>([
   'deep-interview',
   'ralplan',
-  'autoresearch',
 ]);
 
 const EXECUTION_LIKE_MODES = new Set<TrackedWorkflowMode>([
   'autopilot',
+  'autoresearch',
   'team',
   'ralph',
   'ultrawork',

@@ -40,7 +40,13 @@ import {
 import { isLeaderStale, resolveLeaderStalenessThresholdMs, maybeNudgeTeamLeader } from './notify-hook/team-leader-nudge.js';
 import { drainPendingTeamDispatch } from './notify-hook/team-dispatch.js';
 import { handleTmuxInjection } from './notify-hook/tmux-injection.js';
-import { maybeAutoNudge, resolveNudgePaneTarget, isDeepInterviewStateActive } from './notify-hook/auto-nudge.js';
+import {
+  maybeAutoNudge,
+  resolveNudgePaneTarget,
+  isDeepInterviewStateActive,
+  isDeepInterviewInputLockActive,
+  syncSkillStateFromTurn,
+} from './notify-hook/auto-nudge.js';
 import { isManagedOmxSession } from './notify-hook/managed-tmux.js';
 import { logNotifyHookEvent } from './notify-hook/log.js';
 import { reconcileRalphSessionResume } from './notify-hook/ralph-session-resume.js';
@@ -238,14 +244,19 @@ async function main() {
   }
 
   // 1. Log the turn
+  const normalizedInputMessages = normalizeInputMessages(payload);
+  const latestInputPreview = safeString(
+    normalizedInputMessages.length > 0
+      ? normalizedInputMessages[normalizedInputMessages.length - 1]
+      : '',
+  ).slice(0, 200);
   const logEntry = {
     timestamp: new Date().toISOString(),
     type: payload.type || 'agent-turn-complete',
     thread_id: payload['thread-id'] || payload.thread_id,
     turn_id: payload['turn-id'] || payload.turn_id,
-    input_preview: (payload['input-messages'] || payload.input_messages || [])
-      .map((m: any) => m.slice(0, 100))
-      .join('; '),
+    input_preview: latestInputPreview,
+    input_message_count: normalizedInputMessages.length,
     output_preview: (payload['last-assistant-message'] || payload.last_assistant_message || '')
       .slice(0, 200),
   };
@@ -473,7 +484,14 @@ async function main() {
     // Non-fatal: keyword detector module may not be built yet
   }
 
+  try {
+    await syncSkillStateFromTurn(stateDir, payload);
+  } catch {
+    // Non-fatal: lifecycle sync should not block the hook
+  }
+
   const deepInterviewStateActive = await isDeepInterviewStateActive(stateDir, getEffectiveSessionId());
+  const deepInterviewInputLockActive = await isDeepInterviewInputLockActive(stateDir, getEffectiveSessionId());
 
   // 4.55. Notify leader when individual worker transitions to idle (worker session only)
   if (isTeamWorker && parsedTeamWorker && !deepInterviewStateActive) {
@@ -642,7 +660,7 @@ async function main() {
 
   // 9. Auto-nudge: detect Codex stall patterns and automatically send a continuation prompt.
   //    Works for both leader and worker contexts.
-  if (!deepInterviewStateActive) {
+  if (!deepInterviewStateActive || deepInterviewInputLockActive) {
     try {
       await maybeAutoNudge({ cwd, stateDir, logsDir, payload });
     } catch {

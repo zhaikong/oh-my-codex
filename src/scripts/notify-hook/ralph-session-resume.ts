@@ -7,7 +7,7 @@ import { resolveCodexPane } from '../tmux-hook-engine.js';
 import { safeString } from './utils.js';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-const RALPH_TERMINAL_PHASES = new Set(['complete', 'failed', 'cancelled']);
+const RALPH_TERMINAL_PHASES = new Set(['blocked_on_user', 'complete', 'failed', 'cancelled']);
 const RALPH_RESUME_LOCK_STALE_MS = 10_000;
 const RALPH_RESUME_LOCK_TIMEOUT_MS = 5_000;
 const RALPH_RESUME_LOCK_RETRY_MS = 25;

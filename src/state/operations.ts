@@ -16,6 +16,7 @@ import {
 } from '../mcp/state-paths.js';
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
 import { RALPH_PHASES, validateAndNormalizeRalphState } from '../ralph/contract.js';
+import { applyRunOutcomeContract } from '../runtime/run-outcome.js';
 import {
   SKILL_ACTIVE_STATE_MODE,
   readSkillActiveState,
@@ -225,6 +226,14 @@ export async function executeStateOperation(
             ...fields,
             ...((customState as Record<string, unknown>) || {}),
           } as Record<string, unknown>;
+          const explicitRunOutcome = Object.prototype.hasOwnProperty.call(fields, 'run_outcome')
+            || (
+              customState != null
+              && Object.prototype.hasOwnProperty.call(customState as Record<string, unknown>, 'run_outcome')
+            );
+          if (!explicitRunOutcome) {
+            delete mergedRaw.run_outcome;
+          }
 
           if (
             mode === 'ralph' &&
@@ -250,6 +259,15 @@ export async function executeStateOperation(
             }
             Object.assign(mergedRaw, validation.state);
             ensureRalphArtifacts = true;
+          }
+
+          if (mode !== SKILL_ACTIVE_STATE_MODE) {
+            const runOutcomeValidation = applyRunOutcomeContract(mergedRaw);
+            if (!runOutcomeValidation.ok || !runOutcomeValidation.state) {
+              validationError = runOutcomeValidation.error || 'Invalid run outcome state';
+              return;
+            }
+            Object.assign(mergedRaw, runOutcomeValidation.state);
           }
 
           if (isTrackedWorkflowMode(mode) && mergedRaw.active === true) {

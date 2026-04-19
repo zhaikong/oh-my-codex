@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { GuidanceSurfaceContract } from '../prompt-guidance-contract.js';
@@ -9,6 +9,10 @@ const repoRoot = join(__dirname, '../../../');
 
 export function loadSurface(path: string): string {
   return readFileSync(join(repoRoot, path), 'utf-8');
+}
+
+export function listTrackedAgentSurfaces(): string[] {
+  return ['AGENTS.md', 'templates/AGENTS.md'].filter((path) => existsSync(join(repoRoot, path)));
 }
 
 export function assertContractSurface(contract: GuidanceSurfaceContract): void {

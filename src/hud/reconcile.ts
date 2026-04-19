@@ -27,6 +27,7 @@ export interface ReconcileHudForPromptSubmitResult {
 
 export interface ReconcileHudForPromptSubmitDeps {
   env?: NodeJS.ProcessEnv;
+  sessionId?: string;
   listCurrentWindowPanes?: () => TmuxPaneSnapshot[];
   createHudWatchPane?: (
     cwd: string,
@@ -79,7 +80,8 @@ export async function reconcileHudForPromptSubmit(
   const readHudConfigFn = deps.readHudConfig ?? readHudConfig;
   const hudConfig = await readHudConfigFn(cwd).catch(() => null);
   const preset = hudConfig?.preset;
-  const hudCmd = buildHudWatchCommand(omxBin, preset, env.OMX_SESSION_ID?.trim() || undefined);
+  const resolvedSessionId = deps.sessionId?.trim() || env.OMX_SESSION_ID?.trim() || undefined;
+  const hudCmd = buildHudWatchCommand(omxBin, preset, resolvedSessionId);
 
   if (hudPaneIds.length === 1) {
     const resized = resizePane(hudPaneIds[0], desiredHeight);

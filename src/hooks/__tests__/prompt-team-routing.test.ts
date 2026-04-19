@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadSurface } from './prompt-guidance-test-helpers.js';
+import { listTrackedAgentSurfaces, loadSurface } from './prompt-guidance-test-helpers.js';
 
-for (const surface of ['AGENTS.md', 'templates/AGENTS.md']) {
+for (const surface of listTrackedAgentSurfaces()) {
   describe(`${surface} team-vs-non-team routing guardrails`, () => {
     it('selects a single orchestration lane before execution', () => {
       assert.match(loadSurface(surface), /Choose the lane before acting/i);
