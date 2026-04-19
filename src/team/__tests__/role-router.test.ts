@@ -117,10 +117,87 @@ describe('role-router', () => {
       assert.equal(result.confidence, 'high');
     });
 
+    it('routes local file and symbol lookup tasks to explore', () => {
+      const result = routeTaskToRole(
+        'Find auth refresh wiring',
+        'Map which files and symbols implement the local session refresh flow in this repo',
+        'team-exec',
+        'executor',
+      );
+      assert.equal(result.role, 'explore');
+      assert.equal(result.confidence, 'high');
+    });
+
+    it('routes external official-doc research tasks to researcher', () => {
+      const result = routeTaskToRole(
+        'Research official docs',
+        'Check the official docs and version compatibility notes for the upstream auth SDK',
+        'team-exec',
+        'executor',
+      );
+      assert.equal(result.role, 'researcher');
+      assert.equal(result.confidence, 'high');
+    });
+
+    it('routes chosen-technology usage questions to researcher even without explicit docs keywords', () => {
+      const result = routeTaskToRole(
+        'Best way to use framework feature',
+        'What is the best way to use this framework feature, and what behavior should we expect from the SDK?',
+        'team-exec',
+        'executor',
+      );
+      assert.equal(result.role, 'researcher');
+      assert.equal(result.confidence, 'high');
+    });
+
+    it('routes external examples-in-the-wild questions to researcher', () => {
+      const result = routeTaskToRole(
+        'Find library examples in the wild',
+        'Find examples of this library in the wild and explain how the API is typically used',
+        'team-exec',
+        'executor',
+      );
+      assert.equal(result.role, 'researcher');
+      assert.equal(result.confidence, 'high');
+    });
+
+    it('routes dependency evaluation tasks to dependency-expert', () => {
+      const result = routeTaskToRole(
+        'Evaluate logging SDK options',
+        'Compare npm packages for maintenance, license compatibility, migration path, and download stats',
+        'team-exec',
+        'executor',
+      );
+      assert.equal(result.role, 'dependency-expert');
+      assert.equal(result.confidence, 'high');
+    });
+
+    it('routes local usage plus upgrade-decision tasks to explore first', () => {
+      const result = routeTaskToRole(
+        'Check how we use this SDK',
+        'Check how we use this SDK today and whether we should upgrade it',
+        'team-exec',
+        'executor',
+      );
+      assert.equal(result.role, 'explore');
+      assert.equal(result.confidence, 'high');
+    });
+
     it('routes documentation tasks to writer', () => {
       const result = routeTaskToRole('Update docs', 'Write README and migration guide for the new API', 'team-exec', 'executor');
       assert.equal(result.role, 'writer');
       assert.equal(result.confidence, 'high');
+    });
+
+    it('keeps changelog and docs deliverables on the writer lane even when research keywords appear', () => {
+      const changelog = routeTaskToRole(
+        'Update changelog',
+        'Write changelog notes and refresh the release docs with version compatibility details from the official docs',
+        'team-exec',
+        'executor',
+      );
+      assert.equal(changelog.role, 'writer');
+      assert.equal(changelog.confidence, 'high');
     });
 
     it('routes security tasks to security-reviewer', () => {
@@ -134,6 +211,18 @@ describe('role-router', () => {
       assert.equal(result.role, 'executor');
       assert.equal(result.confidence, 'medium');
       assert.match(result.reason, /implementation/i);
+    });
+
+    it('does not route SDK replacement implementation work to dependency-expert', () => {
+      const result = routeTaskToRole(
+        'Replace auth SDK integration',
+        'Implement the SDK replacement by updating client modules, wiring new API calls, and refactoring imports across the flow',
+        'team-exec',
+        'executor',
+      );
+      assert.equal(result.role, 'executor');
+      assert.equal(result.confidence, 'medium');
+      assert.match(result.reason, /implementation lane|implementation-heavy/i);
     });
 
     it('routes refactoring tasks to code-simplifier', () => {

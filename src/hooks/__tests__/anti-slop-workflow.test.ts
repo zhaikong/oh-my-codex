@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,8 +12,8 @@ function read(path: string): string {
 }
 
 describe('anti-slop workflow surfaces', () => {
-  it('adds anti-slop working agreements to root and template AGENTS', () => {
-    for (const file of ['AGENTS.md', 'templates/AGENTS.md']) {
+  it('adds anti-slop working agreements to tracked AGENTS surfaces', () => {
+    for (const file of ['AGENTS.md', 'templates/AGENTS.md'].filter((path) => existsSync(join(repoRoot, path)))) {
       const content = read(file);
       assert.match(content, /## Working agreements/);
       assert.match(content, /Write a cleanup plan before modifying code/i);

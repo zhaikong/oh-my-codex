@@ -16,6 +16,7 @@ import { hudCommand } from "../hud/index.js";
 import { teamCommand } from "./team.js";
 import { ralphCommand } from "./ralph.js";
 import { askCommand } from "./ask.js";
+import { questionCommand } from "./question.js";
 import { stateCommand } from "./state.js";
 import {
   cleanupCommand,
@@ -148,6 +149,7 @@ Usage:
   omx cleanup   Kill orphaned OMX MCP server processes and remove stale OMX /tmp directories
   omx doctor --team  Check team/swarm runtime health diagnostics
   omx ask       Ask local provider CLI (claude|gemini) and write artifact output
+  omx question  OMX-owned blocking question UI entrypoint for agent-invoked user questions
   omx adapt     Scaffold OMX-owned adapter foundations for persistent external targets
   omx resume    Resume a previous interactive Codex session
   omx explore   Default read-only exploration entrypoint (may adaptively use sparkshell backend)
@@ -159,7 +161,7 @@ Usage:
                 Alias for agents-init (lightweight AGENTS bootstrap only)
   omx team      Spawn parallel worker panes in tmux and bootstrap inbox/task state
   omx ralph     Launch Codex with ralph persistence mode active
-  omx autoresearch Launch thin-supervisor autoresearch with keep/discard/reset parity
+  omx autoresearch [DEPRECATED] Use $autoresearch; direct CLI launch removed
   omx version   Show version information
   omx tmux-hook Manage tmux prompt injection workaround (init|status|validate|test)
   omx hooks     Manage hook plugins (init|status|validate|test)
@@ -264,6 +266,7 @@ type CliCommand =
   | "doctor"
   | "cleanup"
   | "ask"
+  | "question"
   | "adapt"
   | "explore"
   | "sparkshell"
@@ -284,6 +287,7 @@ type CliCommand =
 
 const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "ask",
+  "question",
   "cleanup",
   "adapt",
   "autoresearch",
@@ -647,6 +651,7 @@ export async function main(args: string[]): Promise<void> {
     "doctor",
     "cleanup",
     "ask",
+    "question",
     "autoresearch",
     "explore",
     "sparkshell",
@@ -721,6 +726,9 @@ export async function main(args: string[]): Promise<void> {
       }
       case "ask":
         await askCommand(args.slice(1));
+        break;
+      case "question":
+        await questionCommand(args.slice(1));
         break;
       case "adapt":
         await adaptCommand(args.slice(1));

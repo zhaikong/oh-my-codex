@@ -881,6 +881,7 @@ describe("commandOwnsLocalHelp", () => {
       "adapt",
       "agents-init",
       "ask",
+      "question",
       "autoresearch",
       "deepinit",
       "hooks",
@@ -925,6 +926,13 @@ describe("resolveCliInvocation", () => {
   it("resolves ask to ask command", () => {
     assert.deepEqual(resolveCliInvocation(["ask", "claude", "hello"]), {
       command: "ask",
+      launchArgs: [],
+    });
+  });
+
+  it("resolves question to question command", () => {
+    assert.deepEqual(resolveCliInvocation(["question", "--input", "{}"]), {
+      command: "question",
       launchArgs: [],
     });
   });

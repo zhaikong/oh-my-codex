@@ -164,6 +164,10 @@ export function buildStateServerTools() {
 					task_description: { type: "string" },
 					started_at: { type: "string" },
 					completed_at: { type: "string" },
+					run_outcome: {
+						type: "string",
+						enum: ["continue", "finish", "blocked_on_user", "failed", "cancelled"],
+					},
 					error: { type: "string" },
 					state: { type: "object", description: "Additional custom fields" },
 					workingDirectory: { type: "string" },

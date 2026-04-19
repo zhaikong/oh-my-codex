@@ -37,3 +37,4 @@ snapshot.json
 .codex/skills/.system/**
 !.codex/prompts/
 !.codex/prompts/**
+config.bat

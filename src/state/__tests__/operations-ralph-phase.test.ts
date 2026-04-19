@@ -23,6 +23,28 @@ describe('state operations Ralph phase contract', () => {
       const state = JSON.parse(await readFile(file, 'utf-8'));
       assert.equal(state.current_phase, 'executing');
       assert.equal(state.ralph_phase_normalized_from, 'execution');
+      assert.equal(state.run_outcome, 'continue');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts blocked_on_user as an explicit terminal Ralph outcome', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ralph-phase-'));
+    try {
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        mode: 'ralph',
+        active: false,
+        current_phase: 'blocked_on_user',
+      });
+      assert.equal(response.isError, undefined);
+
+      const file = join(wd, '.omx', 'state', 'ralph-state.json');
+      const state = JSON.parse(await readFile(file, 'utf-8'));
+      assert.equal(state.current_phase, 'blocked_on_user');
+      assert.equal(state.run_outcome, 'blocked_on_user');
+      assert.equal(typeof state.completed_at, 'string');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
