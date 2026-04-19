@@ -53,11 +53,24 @@ describe('workflow transition rules', () => {
     assert.deepEqual(interviewToRalplan.resultingModes, ['ralplan']);
     assert.equal(interviewToRalplan.transitionMessage, 'mode transiting: deep-interview -> ralplan');
 
+    const interviewToAutoresearch = evaluateWorkflowTransition(['deep-interview'], 'autoresearch');
+    assert.equal(interviewToAutoresearch.allowed, true);
+    assert.equal(interviewToAutoresearch.kind, 'auto-complete');
+    assert.deepEqual(interviewToAutoresearch.autoCompleteModes, ['deep-interview']);
+    assert.deepEqual(interviewToAutoresearch.resultingModes, ['autoresearch']);
+    assert.equal(interviewToAutoresearch.transitionMessage, 'mode transiting: deep-interview -> autoresearch');
+
     const ralplanToRalph = evaluateWorkflowTransition(['ralplan', 'ultrawork'], 'ralph');
     assert.equal(ralplanToRalph.allowed, true);
     assert.equal(ralplanToRalph.kind, 'auto-complete');
     assert.deepEqual(ralplanToRalph.autoCompleteModes, ['ralplan']);
     assert.deepEqual(ralplanToRalph.resultingModes, ['ultrawork', 'ralph']);
+
+    const ralplanToAutoresearch = evaluateWorkflowTransition(['ralplan'], 'autoresearch');
+    assert.equal(ralplanToAutoresearch.allowed, true);
+    assert.equal(ralplanToAutoresearch.kind, 'auto-complete');
+    assert.deepEqual(ralplanToAutoresearch.autoCompleteModes, ['ralplan']);
+    assert.deepEqual(ralplanToAutoresearch.resultingModes, ['autoresearch']);
   });
 
   it('builds rollback denial guidance for execution-to-planning transitions', () => {

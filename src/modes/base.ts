@@ -14,6 +14,8 @@ import {
 import { reconcileWorkflowTransition } from '../state/workflow-transition-reconcile.js';
 import { syncCanonicalSkillStateForMode } from '../state/skill-active.js';
 import { validateAndNormalizeRalphState } from '../ralph/contract.js';
+import { applyRunOutcomeContract } from '../runtime/run-outcome.js';
+import { syncRunStateFromModeState } from '../runtime/run-state.js';
 import {
   getBaseStateDir,
   getReadScopedStateDirs,
@@ -28,6 +30,7 @@ export interface ModeState {
   iteration: number;
   max_iterations: number;
   current_phase: string;
+  run_outcome?: string;
   task_description?: string;
   started_at: string;
   completed_at?: string;
@@ -72,6 +75,21 @@ function normalizeRalphModeStateOrThrow(state: ModeState): ModeState {
     normalized.ralph_phase_normalized_from = originalPhase;
   }
   return normalized;
+}
+
+function applySharedRunOutcomeContractOrThrow(state: ModeState): ModeState {
+  const validation = applyRunOutcomeContract(state as Record<string, unknown>);
+  if (!validation.ok || !validation.state) {
+    throw new Error(validation.error || 'Invalid run outcome state');
+  }
+  return validation.state as ModeState;
+}
+
+function normalizeModeStateOrThrow(mode: string, state: ModeState): ModeState {
+  const normalized = mode === 'ralph'
+    ? normalizeRalphModeStateOrThrow(state)
+    : state;
+  return applySharedRunOutcomeContractOrThrow(normalized);
 }
 
 function stateDir(projectRoot?: string): string {
@@ -125,10 +143,9 @@ export async function startMode(
   };
 
   const withContext = withModeRuntimeContext({}, stateBase) as ModeState;
-  const state = mode === 'ralph'
-    ? normalizeRalphModeStateOrThrow(withContext)
-    : withContext;
+  const state = normalizeModeStateOrThrow(mode, withContext);
   await writeFile(getStatePath(mode, projectRoot, scope.sessionId), JSON.stringify(state, null, 2));
+  await syncRunStateFromModeState(state, projectRoot, scope.sessionId);
   if (isTrackedWorkflowMode(mode)) {
     await syncCanonicalSkillStateForMode({
       cwd: projectRoot ?? process.cwd(),
@@ -193,14 +210,16 @@ export async function updateModeState(
   await mkdir(scope.stateDir, { recursive: true });
 
   const updatedBase = { ...current, ...updates };
+  if (!Object.prototype.hasOwnProperty.call(updates, 'run_outcome')) {
+    delete updatedBase.run_outcome;
+  }
   if (mode === 'ralph' && scope.sessionId && typeof updatedBase.owner_omx_session_id !== 'string') {
     updatedBase.owner_omx_session_id = scope.sessionId;
   }
-  const normalizedBase = mode === 'ralph'
-    ? normalizeRalphModeStateOrThrow(updatedBase as ModeState)
-    : updatedBase;
+  const normalizedBase = normalizeModeStateOrThrow(mode, updatedBase as ModeState);
   const updated = withModeRuntimeContext(current, normalizedBase) as ModeState;
   await writeFile(getStatePath(mode, projectRoot, scope.sessionId), JSON.stringify(updated, null, 2));
+  await syncRunStateFromModeState(updated, projectRoot, scope.sessionId);
   if (isTrackedWorkflowMode(mode)) {
     await syncCanonicalSkillStateForMode({
       cwd: projectRoot ?? process.cwd(),

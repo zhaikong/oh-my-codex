@@ -1,7 +1,9 @@
 /**
  * OpenClaw Integration - Public API
  *
- * Wakes OpenClaw gateways on hook events. Non-blocking, fire-and-forget.
+ * Wakes OpenClaw gateways on hook events.
+ * Most lifecycle events remain fire-and-forget, but callers may await
+ * ask-user-question delivery so downstream reply routing stays attached.
  *
  * Usage (from notify hook via wakeOpenClaw):
  *   wakeOpenClaw("session-start", { sessionId, projectPath: directory });
@@ -64,8 +66,8 @@ function buildWhitelistedContext(context: OpenClawContext): OpenClawContext {
  * Wake the OpenClaw gateway mapped to a hook event.
  *
  * This is the main entry point called from the notify hook.
- * Non-blocking, swallows all errors. Returns null if OpenClaw
- * is not configured or the event is not mapped.
+ * Errors are swallowed and null is returned when OpenClaw is not configured
+ * or the event is not mapped.
  *
  * @param event - The hook event type
  * @param context - Context data for template variable interpolation

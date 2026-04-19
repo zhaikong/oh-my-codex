@@ -36,11 +36,14 @@ const autopilotSkill = readFileSync(
 	join(__dirname, "../../../skills/autopilot/SKILL.md"),
 	"utf-8",
 );
-const rootAgents = readProjectAgents(join(__dirname, "../../.."));
 const templateAgents = readFileSync(
 	join(__dirname, "../../../templates/AGENTS.md"),
 	"utf-8",
 );
+const rootAgentsPath = join(__dirname, "../../../AGENTS.md");
+const rootAgents = existsSync(rootAgentsPath)
+	? readProjectAgents(join(__dirname, "../../.."))
+	: null;
 
 describe("deep-interview Ouroboros contract", () => {
 	it("includes ambiguity gate math and intent-first scoring", () => {
@@ -146,6 +149,30 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /Do NOT implement directly/i);
 	});
 
+	it("documents omx question as the required structured questioning path with no fallback", () => {
+		assert.match(deepInterviewSkill, /omx question/i);
+		assert.match(
+			deepInterviewSkill,
+			/required `AskUserQuestion` equivalent/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/requires the OMX question tool rather than falling back to another questioning path/i,
+		);
+		assert.doesNotMatch(
+			deepInterviewSkill,
+			/prefer `omx question` when available/i,
+		);
+		assert.doesNotMatch(
+			deepInterviewSkill,
+			/else, use `request_user_input` to present concise multiple-choice options/i,
+		);
+		assert.doesNotMatch(
+			deepInterviewSkill,
+			/fall back to concise plain-text one-question turns/i,
+		);
+	});
+
 	it("preserves clarified intent and boundary constraints across execution handoff", () => {
 		assert.match(
 			deepInterviewSkill,
@@ -195,7 +222,7 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /launch/i);
 		assert.match(
 			deepInterviewSkill,
-			/do not launch detached tmux until the user explicitly confirms/i,
+			/do not run direct CLI launch or detached\/split tmux launch, and only hand off to `\$autoresearch` after explicit confirmation/i,
 		);
 		assert.match(deepInterviewSkill, /<\.\.\.>/i);
 		assert.match(deepInterviewSkill, /TODO/i);
@@ -212,10 +239,17 @@ describe("cross-skill and AGENTS coherence for deep-interview", () => {
 		assert.match(autopilotSkill, /Socratic/i);
 	});
 
-	it("root and template AGENTS include ouroboros keyword and updated description", () => {
-		assert.match(rootAgents, /ouroboros/i);
+	it("tracked AGENTS surfaces include ouroboros keyword and updated description", () => {
+		if (rootAgents != null) {
+			assert.match(rootAgents, /ouroboros/i);
+			assert.match(rootAgents, /Socratic deep interview/i);
+		}
 		assert.match(templateAgents, /ouroboros/i);
-		assert.match(rootAgents, /Socratic deep interview/i);
 		assert.match(templateAgents, /Socratic deep interview/i);
+	});
+
+	it("makes template AGENTS explicit about omx question for deep-interview", () => {
+		assert.match(templateAgents, /deep-interview is active.*`omx question`/i);
+		assert.match(templateAgents, /do not substitute `request_user_input` or ad hoc plain-text questioning/i);
 	});
 });

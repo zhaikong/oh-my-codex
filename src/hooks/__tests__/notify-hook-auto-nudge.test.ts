@@ -126,7 +126,7 @@ if [[ "\$cmd" == "list-panes" ]]; then
     esac
   done
   if [[ -n "\$target" && "\$target" == "${'${OMX_TEST_TMUX_SESSION_NAME:-devsess}'}" ]]; then
-    printf '%%99\tnode\tcodex --model gpt-5\n'
+    printf '%%99\t1\tnode\tcodex --model gpt-5\n'
     exit 0
   fi
   echo "%1 12345"
@@ -431,6 +431,7 @@ describe('notify-hook auto-nudge', () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
       const stateDir = join(omxDir, 'state');
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
       const logsDir = join(omxDir, 'logs');
       const codexHome = join(cwd, 'codex-home');
       const fakeBinDir = join(cwd, 'fake-bin');
@@ -439,6 +440,7 @@ describe('notify-hook auto-nudge', () => {
 
       await mkdir(logsDir, { recursive: true });
       await mkdir(stateDir, { recursive: true });
+      await mkdir(sessionStateDir, { recursive: true });
       await mkdir(codexHome, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
 
@@ -597,6 +599,7 @@ describe('notify-hook auto-nudge', () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
       const stateDir = join(omxDir, 'state');
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
       const logsDir = join(omxDir, 'logs');
       const codexHome = join(cwd, 'codex-home');
       const fakeBinDir = join(cwd, 'fake-bin');
@@ -605,6 +608,7 @@ describe('notify-hook auto-nudge', () => {
 
       await mkdir(logsDir, { recursive: true });
       await mkdir(stateDir, { recursive: true });
+      await mkdir(sessionStateDir, { recursive: true });
       await mkdir(codexHome, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
 
@@ -613,7 +617,7 @@ describe('notify-hook auto-nudge', () => {
       });
       await writeManagedSessionState(stateDir, cwd);
 
-      await writeJson(join(stateDir, 'ralph-state.json'), {
+      await writeJson(join(sessionStateDir, 'ralph-state.json'), {
         active: true,
         tmux_pane_id: '%99',
       });
@@ -664,7 +668,7 @@ if [[ "$cmd" == "list-panes" ]]; then
     esac
   done
   if [[ "$target" == "${managedSessionName}" ]]; then
-    printf "%%99\tsh\tbash\n%%100\tnode\tcodex --model gpt-5\n"
+    printf "%%99\t0\tsh\tbash\n%%100\t1\tnode\tcodex --model gpt-5\n"
     exit 0
   fi
   echo "%1 12345"
@@ -691,6 +695,402 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, defaultAutoNudgePattern('%100'), 'should upgrade anchored shell pane to sibling codex pane');
+    });
+  });
+
+  it('keeps a verified codex anchor from active mode state even when a sibling codex pane is focused', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+      const managedSessionName = buildTmuxSessionName(cwd, 'sess-managed');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(sessionStateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+      await writeManagedSessionState(stateDir, cwd);
+
+      await writeJson(join(sessionStateDir, 'ralph-state.json'), {
+        active: true,
+        tmux_pane_id: '%99',
+      });
+
+      const fakeTmux = `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  format=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -p) shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) format="$1"; shift ;;
+    esac
+  done
+  if [[ "$format" == "#{pane_current_command}" && "$target" == "%99" ]]; then
+    echo "codex"
+    exit 0
+  fi
+  if [[ "$format" == "#{pane_start_command}" && "$target" == "%99" ]]; then
+    echo "codex"
+    exit 0
+  fi
+  if [[ "$format" == "#{pane_in_mode}" && "$target" == "%99" ]]; then
+    echo "0"
+    exit 0
+  fi
+  if [[ "$format" == "#S" && "$target" == "%99" ]]; then
+    echo "${managedSessionName}"
+    exit 0
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  target=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -t) target="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ "$target" == "${managedSessionName}" ]]; then
+    printf "%%99\t0\tcodex\tcodex\\n%%100\t1\tcodex\tcodex\\n"
+    exit 0
+  fi
+  echo "%1 12345"
+  exit 0
+fi
+if [[ "$cmd" == "capture-pane" ]]; then
+  printf "How can I help?\\n› "
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+exit 0
+`;
+      await writeFile(join(fakeBinDir, 'tmux'), fakeTmux);
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'Keep going and finish the cleanup from here.',
+      }, {
+        TMUX_PANE: '',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, defaultAutoNudgePattern('%99'), 'should keep the verified codex anchor');
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%100'), 'should not jump to the focused sibling codex pane');
+    });
+  });
+
+  it('upgrades a node shell anchor from active mode state to the sibling codex pane', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+      const managedSessionName = buildTmuxSessionName(cwd, 'sess-managed');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(sessionStateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+      await writeManagedSessionState(stateDir, cwd);
+
+      await writeJson(join(sessionStateDir, 'ralph-state.json'), {
+        active: true,
+        tmux_pane_id: '%99',
+      });
+
+      const fakeTmux = `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  format=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -p) shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) format="$1"; shift ;;
+    esac
+  done
+  if [[ "$format" == "#{pane_current_command}" && "$target" == "%99" ]]; then
+    echo "node"
+    exit 0
+  fi
+  if [[ "$format" == "#{pane_start_command}" && "$target" == "%99" ]]; then
+    echo "bash"
+    exit 0
+  fi
+  if [[ "$format" == "#{pane_in_mode}" && "$target" == "%100" ]]; then
+    echo "0"
+    exit 0
+  fi
+  if [[ "$format" == "#S" && "$target" == "%99" ]]; then
+    echo "${managedSessionName}"
+    exit 0
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  target=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -t) target="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ "$target" == "${managedSessionName}" ]]; then
+    printf "%%99\t0\tnode\tbash\\n%%100\t1\tnode\tcodex --model gpt-5\\n"
+    exit 0
+  fi
+  echo "%1 12345"
+  exit 0
+fi
+if [[ "$cmd" == "capture-pane" ]]; then
+  printf "How can I help?\\n› "
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+exit 0
+`;
+      await writeFile(join(fakeBinDir, 'tmux'), fakeTmux);
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'Keep going and finish the cleanup from here.',
+      }, {
+        TMUX_PANE: '',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, defaultAutoNudgePattern('%100'), 'should upgrade the node shell anchor to the sibling codex pane');
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%99'), 'node shell anchor should not be retained');
+    });
+  });
+
+  it('upgrades a shell-degraded codex anchor from active mode state to the sibling codex pane', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+      const managedSessionName = buildTmuxSessionName(cwd, 'sess-managed');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(sessionStateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+      await writeManagedSessionState(stateDir, cwd);
+
+      await writeJson(join(sessionStateDir, 'ralph-state.json'), {
+        active: true,
+        tmux_pane_id: '%99',
+      });
+
+      const fakeTmux = `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  format=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -p) shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) format="$1"; shift ;;
+    esac
+  done
+  if [[ "$format" == "#{pane_current_command}" && "$target" == "%99" ]]; then
+    echo "bash"
+    exit 0
+  fi
+  if [[ "$format" == "#{pane_start_command}" && "$target" == "%99" ]]; then
+    echo "codex --model gpt-5"
+    exit 0
+  fi
+  if [[ "$format" == "#{pane_in_mode}" && "$target" == "%100" ]]; then
+    echo "0"
+    exit 0
+  fi
+  if [[ "$format" == "#S" && "$target" == "%99" ]]; then
+    echo "${managedSessionName}"
+    exit 0
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  target=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -t) target="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ "$target" == "${managedSessionName}" ]]; then
+    printf "%%99\t1\tbash\tcodex --model gpt-5\\n%%100\t0\tnode\tcodex --model gpt-5\\n"
+    exit 0
+  fi
+  echo "%1 12345"
+  exit 0
+fi
+if [[ "$cmd" == "capture-pane" ]]; then
+  printf "How can I help?\\n› "
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+exit 0
+`;
+      await writeFile(join(fakeBinDir, 'tmux'), fakeTmux);
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'Keep going and finish the cleanup from here.',
+      }, {
+        TMUX_PANE: '',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, defaultAutoNudgePattern('%100'), 'should upgrade the shell-degraded codex anchor to the sibling codex pane');
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%99'), 'shell-degraded codex anchor should not be retained');
+    });
+  });
+
+  it('fails closed when a shell-degraded codex anchor has no live sibling pane', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+      const managedSessionName = buildTmuxSessionName(cwd, 'sess-managed');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(sessionStateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+      await writeManagedSessionState(stateDir, cwd);
+
+      await writeJson(join(sessionStateDir, 'ralph-state.json'), {
+        active: true,
+        tmux_pane_id: '%99',
+      });
+
+      const fakeTmux = `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  format=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -p) shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) format="$1"; shift ;;
+    esac
+  done
+  if [[ "$format" == "#{pane_current_command}" && "$target" == "%99" ]]; then
+    echo "bash"
+    exit 0
+  fi
+  if [[ "$format" == "#{pane_start_command}" && "$target" == "%99" ]]; then
+    echo "codex --model gpt-5"
+    exit 0
+  fi
+  if [[ "$format" == "#S" && "$target" == "%99" ]]; then
+    echo "${managedSessionName}"
+    exit 0
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  target=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -t) target="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ "$target" == "${managedSessionName}" ]]; then
+    printf "%%99\t1\tbash\tcodex --model gpt-5\\n%%100\t0\tbash\tbash\\n"
+    exit 0
+  fi
+  echo "%1 12345"
+  exit 0
+fi
+if [[ "$cmd" == "capture-pane" ]]; then
+  printf "How can I help?\\n› "
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+exit 0
+`;
+      await writeFile(join(fakeBinDir, 'tmux'), fakeTmux);
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'Keep going and finish the cleanup from here.',
+      }, {
+        TMUX_PANE: '',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%99'), 'shell-degraded codex anchor should not be retained without a live sibling');
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%100'), 'no live sibling should keep auto-nudge from sending input');
     });
   });
 
@@ -728,6 +1128,86 @@ exit 0
 
       const nudgeStatePath = join(workerStateRoot, 'auto-nudge-state.json');
       assert.ok(existsSync(nudgeStatePath), 'worker state root should receive auto-nudge state');
+    });
+  });
+
+  it('still auto-nudges from the stored worker pane when TMUX_PANE is missing and the worker pane looks shell-degraded', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const workerStateRoot = join(cwd, 'leader-state-root');
+      const logsDir = join(cwd, '.omx', 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(workerStateRoot, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+      await writeJson(join(workerStateRoot, 'ralph-state.json'), {
+        active: true,
+        tmux_pane_id: '%99',
+      });
+
+      const fakeTmux = `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  format=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -p) shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) format="$1"; shift ;;
+    esac
+  done
+  if [[ "$format" == "#{pane_current_command}" && "$target" == "%99" ]]; then
+    echo "bash"
+    exit 0
+  fi
+  if [[ "$format" == "#{pane_start_command}" && "$target" == "%99" ]]; then
+    echo "codex --model gpt-5"
+    exit 0
+  fi
+  if [[ "$format" == "#{pane_in_mode}" && "$target" == "%99" ]]; then
+    echo "0"
+    exit 0
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "capture-pane" ]]; then
+  printf "How can I help?\\n› "
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  echo "%1 12345"
+  exit 0
+fi
+exit 0
+`;
+      await writeFile(join(fakeBinDir, 'tmux'), fakeTmux);
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'I can continue with the worker follow-up from here.',
+      }, {
+        OMX_TEAM_WORKER: 'auto-nudge/worker-1',
+        OMX_TEAM_STATE_ROOT: workerStateRoot,
+        TMUX_PANE: '',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, defaultAutoNudgePattern('%99'), 'worker fallback should keep using the stored pane when TMUX_PANE is absent');
     });
   });
 
@@ -910,7 +1390,7 @@ if [[ "$cmd" == "list-panes" ]]; then
     esac
   done
   if [[ "$target" == "${managedSessionName}" ]]; then
-    printf "%%99\t1\tsh\\n%%100\t0\tcodex --model gpt-5\\n"
+    printf "%%99\t1\tsh\tbash\\n%%100\t0\tnode\tcodex --model gpt-5\\n"
     exit 0
   fi
   echo "%1 12345"
@@ -1350,7 +1830,7 @@ exit 0
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'input-messages': ['please use autopilot for this task'],
+        'input-messages': ['please use $autopilot for this task'],
         'last-assistant-message': 'Here is the plan I will follow.',
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
@@ -1464,6 +1944,7 @@ exit 0
       const logsDir = join(omxDir, 'logs');
       const codexHome = join(cwd, 'codex-home');
       const fakeBinDir = join(cwd, 'fake-bin');
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
 
       await mkdir(logsDir, { recursive: true });
       await mkdir(stateDir, { recursive: true });
@@ -1492,7 +1973,7 @@ exit 0
       assert.deepEqual(skillState.input_lock?.blocked_inputs, DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS);
       assert.match(skillState.input_lock?.message || '', /Deep interview is active/i);
 
-      const modeState = JSON.parse(await readFile(join(stateDir, 'deep-interview-state.json'), 'utf-8')) as {
+      const modeState = JSON.parse(await readFile(join(sessionStateDir, 'deep-interview-state.json'), 'utf-8')) as {
         active: boolean;
         mode: string;
         current_phase: string;
@@ -1502,6 +1983,65 @@ exit 0
       assert.equal(modeState.mode, 'deep-interview');
       assert.equal(modeState.current_phase, 'intent-first');
       assert.equal(modeState.input_lock?.active, true);
+    });
+  });
+
+  it('releases deep-interview mode state on normal completion without waiting for later keyword input', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(join(cwd, 'tmux.log')));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const activated = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'input-messages': ['please run a deep interview first'],
+        'last-assistant-message': 'Round 1 | Target: Goal Clarity',
+      });
+      assert.equal(activated.status, 0, `activation hook failed: ${activated.stderr || activated.stdout}`);
+
+      const completed = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'input-messages': ['continue'],
+        'last-assistant-message': 'Interview completed. Final summary ready.',
+      });
+      assert.equal(completed.status, 0, `completion hook failed: ${completed.stderr || completed.stdout}`);
+
+      const skillState = JSON.parse(await readFile(join(sessionStateDir, 'skill-active-state.json'), 'utf-8')) as {
+        active: boolean;
+        phase: string;
+        input_lock?: { active: boolean; exit_reason?: string; released_at?: string };
+      };
+      assert.equal(skillState.active, false);
+      assert.equal(skillState.phase, 'completing');
+      assert.equal(skillState.input_lock?.active, false);
+      assert.equal(skillState.input_lock?.exit_reason, 'success');
+      assert.ok(skillState.input_lock?.released_at);
+
+      const modeState = JSON.parse(await readFile(join(sessionStateDir, 'deep-interview-state.json'), 'utf-8')) as {
+        active: boolean;
+        current_phase: string;
+        completed_at?: string;
+        input_lock?: { active: boolean; exit_reason?: string; released_at?: string };
+      };
+      assert.equal(modeState.active, false);
+      assert.equal(modeState.current_phase, 'completing');
+      assert.ok(modeState.completed_at);
+      assert.equal(modeState.input_lock?.active, false);
+      assert.equal(modeState.input_lock?.exit_reason, 'success');
+      assert.ok(modeState.input_lock?.released_at);
     });
   });
 
@@ -1653,6 +2193,184 @@ exit 0
     });
   });
 
+  it('allows non-blocked custom deep-interview auto-nudge responses to continue', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+      const capturePath = join(cwd, 'capture.txt');
+      const customResponse = 'advance with the next interview question';
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0, response: customResponse },
+      });
+      await writeManagedSessionState(stateDir, cwd);
+      await mkdir(sessionStateDir, { recursive: true });
+      await writeJson(join(sessionStateDir, 'skill-active-state.json'), {
+        version: 1,
+        active: true,
+        skill: 'deep-interview',
+        keyword: 'deep interview',
+        phase: 'executing',
+        activated_at: '2026-02-25T00:00:00.000Z',
+        updated_at: '2026-02-25T00:00:00.000Z',
+        source: 'keyword-detector',
+        input_lock: {
+          active: true,
+          scope: 'deep-interview-auto-approval',
+          acquired_at: '2026-02-25T00:00:00.000Z',
+          blocked_inputs: DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS,
+          message: 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.',
+        },
+      });
+      await writeFile(capturePath, 'OpenAI Codex\n› ');
+
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'Keep going and finish the cleanup.',
+      }, {
+        OMX_TEST_CAPTURE_FILE: capturePath,
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(
+        tmuxLog,
+        new RegExp(`send-keys -t %99 -l ${customResponse} \\[OMX_TMUX_INJECT\\]`),
+        'should allow a non-blocked continuation response during deep interview',
+      );
+    });
+  });
+
+  it('keeps autoresearch active when assistant claims completion without validator evidence', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+      await writeManagedSessionState(stateDir, cwd);
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
+      await mkdir(sessionStateDir, { recursive: true });
+      await writeJson(join(sessionStateDir, 'skill-active-state.json'), {
+        active: true,
+        skill: 'autoresearch',
+        keyword: '$autoresearch',
+        phase: 'executing',
+        source: 'keyword-detector',
+        session_id: 'sess-managed',
+      });
+      await writeJson(join(sessionStateDir, 'autoresearch-state.json'), {
+        active: true,
+        mode: 'autoresearch',
+        current_phase: 'executing',
+        session_id: 'sess-managed',
+        validation_mode: 'mission-validator-script',
+        mission_validator_command: 'node scripts/validate.js',
+        completion_artifact_path: '.omx/specs/autoresearch-demo/completion.json',
+      });
+
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'All tests pass. Completed with summary.',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const skillState = JSON.parse(await readFile(join(sessionStateDir, 'skill-active-state.json'), 'utf-8')) as {
+        active: boolean;
+        phase: string;
+        autoresearch_completion_reason?: string;
+      };
+      assert.equal(skillState.active, true);
+      assert.equal(skillState.phase, 'executing');
+      assert.equal(skillState.autoresearch_completion_reason, 'missing_or_invalid_completion_artifact');
+    });
+  });
+
+  it('completes autoresearch when validator artifact passes', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+      const specDir = join(cwd, '.omx', 'specs', 'autoresearch-demo');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await mkdir(specDir, { recursive: true });
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+      await writeManagedSessionState(stateDir, cwd);
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
+      await mkdir(sessionStateDir, { recursive: true });
+      await writeJson(join(sessionStateDir, 'skill-active-state.json'), {
+        active: true,
+        skill: 'autoresearch',
+        keyword: '$autoresearch',
+        phase: 'reviewing',
+        source: 'keyword-detector',
+        session_id: 'sess-managed',
+      });
+      await writeJson(join(sessionStateDir, 'autoresearch-state.json'), {
+        active: true,
+        mode: 'autoresearch',
+        current_phase: 'reviewing',
+        session_id: 'sess-managed',
+        validation_mode: 'mission-validator-script',
+        mission_validator_command: 'node scripts/validate.js',
+        completion_artifact_path: '.omx/specs/autoresearch-demo/completion.json',
+      });
+      await writeJson(join(specDir, 'completion.json'), {
+        status: 'passed',
+        passed: true,
+      });
+
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'Completed with final summary after validator pass.',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const skillState = JSON.parse(await readFile(join(sessionStateDir, 'skill-active-state.json'), 'utf-8')) as {
+        active: boolean;
+        phase: string;
+        autoresearch_completion_reason?: string;
+      };
+      assert.equal(skillState.active, false);
+      assert.equal(skillState.phase, 'completing');
+      assert.equal(skillState.autoresearch_completion_reason, 'validator_passed');
+    });
+  });
+
   it('releases the deep-interview input lock on success', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
@@ -1707,6 +2425,79 @@ exit 0
       assert.equal(skillState.input_lock?.active, false);
       assert.ok(skillState.input_lock?.released_at);
       assert.equal(skillState.input_lock?.exit_reason, 'success');
+    });
+  });
+
+  it('does not release deep-interview state from generic progress prose', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+      await writeManagedSessionState(stateDir, cwd);
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
+      await mkdir(sessionStateDir, { recursive: true });
+      await writeJson(join(sessionStateDir, 'skill-active-state.json'), {
+        version: 1,
+        active: true,
+        skill: 'deep-interview',
+        keyword: 'deep interview',
+        phase: 'executing',
+        activated_at: '2026-02-25T00:00:00.000Z',
+        updated_at: '2026-02-25T00:00:00.000Z',
+        source: 'keyword-detector',
+        input_lock: {
+          active: true,
+          scope: 'deep-interview-auto-approval',
+          acquired_at: '2026-02-25T00:00:00.000Z',
+          blocked_inputs: DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS,
+          message: 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.',
+        },
+      });
+      await writeJson(join(sessionStateDir, 'deep-interview-state.json'), {
+        active: true,
+        mode: 'deep-interview',
+        current_phase: 'intent-first',
+        started_at: '2026-02-25T00:00:00.000Z',
+        updated_at: '2026-02-25T00:00:00.000Z',
+      });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(join(cwd, 'tmux.log')));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'Summary so far: done with the first round of questions.',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const skillState = JSON.parse(await readFile(join(sessionStateDir, 'skill-active-state.json'), 'utf-8')) as {
+        active: boolean;
+        phase: string;
+        input_lock?: { active: boolean; released_at?: string; exit_reason?: string };
+      };
+      assert.equal(skillState.active, true);
+      assert.notEqual(skillState.phase, 'completing');
+      assert.equal(skillState.input_lock?.active, true);
+      assert.equal(skillState.input_lock?.released_at || '', '');
+      assert.equal(skillState.input_lock?.exit_reason || '', '');
+
+      const modeState = JSON.parse(await readFile(join(sessionStateDir, 'deep-interview-state.json'), 'utf-8')) as {
+        active: boolean;
+        current_phase: string;
+        completed_at?: string;
+      };
+      assert.equal(modeState.active, true);
+      assert.equal(modeState.current_phase, 'intent-first');
+      assert.equal(modeState.completed_at || '', '');
     });
   });
 
@@ -1922,6 +2713,7 @@ exit 0
       const codexHome = join(cwd, 'codex-home');
       const fakeBinDir = join(cwd, 'fake-bin');
       const tmuxLogPath = join(cwd, 'tmux.log');
+      const captureFile = join(cwd, 'capture-output.txt');
 
       await mkdir(logsDir, { recursive: true });
       await mkdir(stateDir, { recursive: true });
@@ -1931,15 +2723,17 @@ exit 0
       await writeJson(join(codexHome, '.omx-config.json'), {
         autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
       });
+      await writeFile(captureFile, 'Here are the results.\nKeep going and finish the implementation.\n› ');
 
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'Keep going and finish the focused cleanup.',
+        'last-assistant-message': 'clean output with no stall',
       }, {
         TMUX_PANE: '',  // No pane available
         TMUX: '',
+        OMX_TEST_CAPTURE_FILE: captureFile,
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
